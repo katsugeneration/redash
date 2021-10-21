@@ -266,27 +266,30 @@ class BigQuery(BaseQueryRunner):
         service = self._get_bigquery_service()
         project_id = self._get_project_id()
         datasets = service.datasets().list(projectId=project_id).execute()
-        schema = []
-        for dataset in datasets.get('datasets', []):
-            dataset_id = dataset['datasetReference']['datasetId']
-            tables = service.tables().list(projectId=project_id, datasetId=dataset_id).execute()
-            while True:
-                for table in tables.get('tables', []):
-                    table_data = service.tables().get(projectId=project_id,
-                                                      datasetId=dataset_id,
-                                                      tableId=table['tableReference']['tableId']).execute()
-                    table_schema = self._get_columns_schema(table_data)
-                    schema.append(table_schema)
 
-                next_token = tables.get('nextPageToken', None)
-                if next_token is None:
-                    break
+        query_base = """
+        SELECT table_schema, table_name, column_name
+        FROM `{dataset_id}`.INFORMATION_SCHEMA.COLUMNS
+        WHERE table_schema NOT IN ('information_schema')
+        """
 
-                tables = service.tables().list(projectId=project_id,
-                                               datasetId=dataset_id,
-                                               pageToken=next_token).execute()
+        schema = {}
+        for dataset in datasets.get("datasets", []):
+            dataset_id = dataset["datasetReference"]["datasetId"]
+            query = query_base.format(dataset_id=dataset_id)
 
-        return schema
+            results, error = self.run_query(query, None)
+            if error is not None:
+                raise Exception("Failed getting schema.")
+
+            results = json_loads(results)
+            for row in results["rows"]:
+                table_name = "{0}.{1}".format(row["table_schema"], row["table_name"])
+                if table_name not in schema:
+                    schema[table_name] = {"name": table_name, "columns": []}
+                schema[table_name]["columns"].append(row["column_name"])
+
+        return list(schema.values())
 
     def run_query(self, query, user):
         logger.debug("BigQuery got query: %s", query)
